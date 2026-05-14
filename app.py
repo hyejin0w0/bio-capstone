@@ -126,59 +126,101 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 데이터 로딩 함수 (캐싱 적용)
+# --- 데이터 로드 로직 (고도화: 업로드 기능 추가) ---
 @st.cache_data
-def load_data():
+def load_default_data():
     file_path = 'archive/GSE58606_data.csv'
     try:
         df = pd.read_csv(file_path)
-        # 중복되는 이름이 있을 경우 (2), (3) 등을 붙여서 고유한 컬럼명 유지
+        # 기본 데이터 컬럼명 정리
         cleaned_columns = []
         seen = {}
         for col in df.columns:
-            if " : " in col:
-                clean_name = col.split(" : ")[1].strip()
-            else:
-                clean_name = col
-            
+            clean_name = col.split(" : ")[1].strip() if " : " in col else col
             if clean_name in seen:
                 seen[clean_name] += 1
                 clean_name = f"{clean_name} ({seen[clean_name]})"
             else:
                 seen[clean_name] = 1
-                
             cleaned_columns.append(clean_name)
         df.columns = cleaned_columns
         
-        # 보기 좋게 target_actual 값을 변경
+        # target_actual 값 변경
         if 'target_actual' in df.columns:
             df['target_actual'] = df['target_actual'].replace({
                 'primary breast cancer': 'Cancer (Tumor)',
                 'normal breast tissue': 'Normal'
             })
-            
         return df
     except Exception as e:
-        st.error(f"데이터 로딩 오류: {e}")
         return None
 
-df = load_data()
+# 사이드바: 데이터 소스 및 메뉴 설정
+with st.sidebar:
+    st.markdown("<h2 style='text-align: center;'>🧭 Navigation</h2>", unsafe_allow_html=True)
+    menu = st.radio("화면 이동", ["🏠 홈 (Overview)", "🔬 유전자 분석 (Analysis)"], label_visibility="collapsed")
+    st.markdown("---")
+    
+    st.markdown("### 📂 데이터 소스 설정")
+    data_source = st.radio(
+        "분석할 데이터를 선택하세요",
+        ["기본 샘플 데이터 (GSE58606)", "내 데이터 업로드 (CSV)"],
+        help="직접 수집한 데이터를 분석하려면 '내 데이터 업로드'를 선택하세요."
+    )
+    
+    uploaded_df = None
+    if data_source == "내 데이터 업로드 (CSV)":
+        st.info("⚠️ 분석을 위해 반드시 **CSV 형식(.csv)**의 파일을 업로드해 주세요.")
+        uploaded_file = st.file_uploader("CSV 파일 선택", type=["csv"])
+        if uploaded_file is not None:
+            try:
+                uploaded_df = pd.read_csv(uploaded_file)
+                st.success("✅ 파일 업로드 성공!")
+            except Exception as e:
+                st.error(f"파일 오류: {e}")
+
+# 최종 데이터 결정 및 컬럼 매핑
+df = None
+group_col = 'target_actual'
+normal_label = 'Normal'
+cancer_label = 'Cancer (Tumor)'
+
+if data_source == "내 데이터 업로드 (CSV)" and uploaded_df is not None:
+    df = uploaded_df
+    with st.sidebar:
+        st.markdown("---")
+        st.markdown("### 🎯 데이터 매핑 설정")
+        # 그룹 정보가 있을 법한 컬럼 추천 (유니크 값이 적은 것)
+        potential_group_cols = [col for col in df.columns if df[col].nunique() < 10]
+        group_col_selected = st.selectbox("그룹(상태) 정보 컬럼", df.columns, index=df.columns.get_loc(potential_group_cols[0]) if potential_group_cols else 0)
+        
+        unique_values = df[group_col_selected].unique().tolist()
+        col_m1, col_m2 = st.columns(2)
+        with col_m1:
+            normal_label = st.selectbox("정상군(Normal) 값", unique_values, index=0)
+        with col_m2:
+            cancer_label = st.selectbox("암군(Cancer) 값", unique_values, index=min(1, len(unique_values)-1))
+        
+        # 분석용 컬럼 생성
+        df['target_actual'] = df[group_col_selected].map({normal_label: 'Normal', cancer_label: 'Cancer (Tumor)'})
+        group_col = 'target_actual'
+else:
+    df = load_default_data()
 
 if df is not None:
     # 타겟 컬럼 및 유전자 목록 추출
     group_col = 'target_actual'
-    non_gene_cols = ['target', 'target_actual']
+    non_gene_cols = ['target', 'target_actual', 'target_original']
     gene_cols = [col for col in df.columns if col not in non_gene_cols]
+    
+    # 데이터 수치화 (업로드 데이터의 경우 문자열로 인식될 수 있음)
+    for col in gene_cols:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+        
     gene_cols_sorted = sorted(gene_cols)
     
     normal_count = len(df[df[group_col] == 'Normal'])
     cancer_count = len(df[df[group_col] == 'Cancer (Tumor)'])
-
-    # 사이드바 메뉴 (화면 분리)
-    with st.sidebar:
-        st.markdown("<h2 style='text-align: center;'>🧭 Navigation</h2>", unsafe_allow_html=True)
-        menu = st.radio("화면 이동", ["🏠 홈 (Overview)", "🔬 유전자 분석 (Analysis)"], label_visibility="collapsed")
-        st.markdown("---")
 
     # ---------------------------------------------------------
     # 🏠 홈 화면 (Overview)
@@ -260,10 +302,119 @@ if df is not None:
             ''', unsafe_allow_html=True)
             
         st.markdown("<br>", unsafe_allow_html=True)
+
+        # --- 생명정보학적 해석 (Biological Insights) 섹션 ---
+        with st.container(border=True):
+            ins_col1, ins_col2 = st.columns([1.5, 1])
+            with ins_col1:
+                st.markdown(f"#### 🧬 {selected_gene}의 생물학적 특징")
+                miRNA_knowledge = {
+                    "hsa-miR-21": {
+                        "target": "PTEN, PDCD4", 
+                        "role": "Oncogenic (암 발생 촉진)", 
+                        "pathways": ["PI3K/Akt Signaling", "Apoptosis Inhibition", "TGF-beta Signaling"],
+                        "desc": "유방암에서 가장 흔하게 과발현되는 miRNA로, 종양 억제 유전자인 PTEN을 억제하여 세포 증식과 생존을 돕습니다."
+                    },
+                    "hsa-let-7a": {
+                        "target": "RAS, MYC, HMGA2", 
+                        "role": "Tumor Suppressor (종양 억제)", 
+                        "pathways": ["Cell Cycle Control (G1/S)", "Ras/MAPK Signaling", "Pluripotency Maintenance"],
+                        "desc": "세포의 분화와 성장을 조절하며, 발현이 감소할 경우 RAS/MYC 단백질이 증가하여 암세포의 무분별한 증식을 유도합니다."
+                    },
+                    "hsa-miR-155": {
+                        "target": "SOCS1, SHIP1, TP53INP1", 
+                        "role": "Oncogenic (면역 및 증식 조절)", 
+                        "pathways": ["NF-kappaB Signaling", "Inflammatory Response", "B-cell Development"],
+                        "desc": "염증 반응과 관련된 유전자들을 조절하며, 유방암세포의 침습성과 항암제 내성을 높이는 데 관여합니다."
+                    },
+                    "hsa-miR-10b": {
+                        "target": "HOXD10", 
+                        "role": "Metastasis-related (전이 관련)", 
+                        "pathways": ["EMT (Epithelial-Mesenchymal Transition)", "RhoC Signaling", "Migration & Invasion"],
+                        "desc": "암세포가 주변 조직으로 퍼져나가는 전이 과정을 촉진하는 핵심 인자로, HOXD10 억제를 통해 세포의 이동성을 높입니다."
+                    }
+                }
+                base_name = selected_gene.split('(')[0].strip()
+                insight = next((v for k, v in miRNA_knowledge.items() if k in base_name), None)
+                
+                if insight:
+                    st.markdown(f"""
+                    <div style='background-color: #f0f4f8; padding: 18px; border-radius: 12px; border-left: 5px solid #92A8D1; margin-bottom: 10px;'>
+                        <p style='margin-bottom: 8px;'><b>🎯 핵심 타겟:</b> <span style='color:#e74c3c;'>{insight['target']}</span></p>
+                        <p style='margin-bottom: 8px;'><b>🧬 관여 경로 (Pathways):</b></p>
+                        <div style='display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 10px;'>
+                            {" ".join([f"<span style='background-color:#92A8D1; color:white; padding: 2px 8px; border-radius: 15px; font-size: 0.8rem;'>{p}</span>" for p in insight['pathways']])}
+                        </div>
+                        <p style='margin-bottom: 8px;'><b>📜 생물학적 기전:</b> {insight['role']}</p>
+                        <p style='font-size: 0.85rem; color: #555; line-height: 1.4;'>{insight['desc']}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                else:
+                    st.info(f"💡 {base_name}에 대한 상세 지식 및 경로 분석 정보를 준비 중입니다. 아래 링크를 통해 최신 지견을 확인해 보세요!")
+                
+                search_url = f"https://pubmed.ncbi.nlm.nih.gov/?term={base_name}+breast+cancer"
+                st.markdown(f"🔗 [PubMed에서 {base_name} 관련 최신 논문 검색하기]({search_url})")
+            
+            with ins_col2:
+                # 작은 바이올린 플롯으로 시각적 보조
+                fig_mini = px.violin(df, x=group_col, y=selected_gene, color=group_col, box=True, template="plotly_white", color_discrete_map={"Normal": "#92A8D1", "Cancer (Tumor)": "#F7CAC9"})
+                fig_mini.update_layout(height=200, margin=dict(l=10, r=10, t=10, b=10), showlegend=False)
+                st.plotly_chart(fig_mini, use_container_width=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
         
+        # --- 볼케이노 플롯을 위한 전전처리 및 계산 ---
+        @st.cache_data(show_spinner=False)
+        def calculate_all_diff_exp(dataframe):
+            """모든 유전자에 대해 Fold Change와 P-value를 미리 계산합니다."""
+            g_col = 'target_actual'
+            # 분석용 컬럼 제외
+            n_gene_cols = ['target', 'target_actual', 'target_original']
+            g_cols = [col for col in dataframe.columns if col not in n_gene_cols]
+            
+            cancer_samples = dataframe[dataframe[g_col] == 'Cancer (Tumor)']
+            normal_samples = dataframe[dataframe[g_col] == 'Normal']
+            
+            res = []
+            for gene in g_cols:
+                try:
+                    c_v = pd.to_numeric(cancer_samples[gene], errors='coerce').dropna()
+                    n_v = pd.to_numeric(normal_samples[gene], errors='coerce').dropna()
+                    if len(c_v) < 2 or len(n_v) < 2: continue
+                    
+                    fc = c_v.mean() - n_v.mean()
+                    _, p = stats.ttest_ind(c_v, n_v, equal_var=False)
+                    if np.isnan(p): continue
+                    
+                    res.append({'Gene': gene, 'FC': fc, 'P': p, 'logP': -np.log10(p)})
+                except: continue
+            return pd.DataFrame(res)
+
+        with st.spinner('볼케이노 플롯을 위한 전체 유전자 분석 중... 잠시만요! 🌸'):
+            volcano_df = calculate_all_diff_exp(df)
+
+        # --- 유의성 기준 설정 및 상태 계산 (에러 방지를 위해 상단으로 이동) ---
+        with st.container(border=True):
+            st.markdown("#### ⚙️ 분석 기준 설정")
+            v_col1, v_col2, v_col3 = st.columns([1, 1, 2])
+            with v_col1:
+                p_crit = st.number_input("P-value 기준 (α)", value=0.05, format="%.3f", step=0.005, key="p_crit_val")
+            with v_col2:
+                fc_crit = st.number_input("Log2 FC 기준", value=1.0, format="%.1f", step=0.1, key="fc_crit_val")
+            
+            # 유의성 라벨링 미리 수행
+            volcano_df['Status'] = 'Non-significant'
+            volcano_df.loc[(volcano_df['P'] < p_crit) & (volcano_df['FC'] > fc_crit), 'Status'] = 'Up-regulated'
+            volcano_df.loc[(volcano_df['P'] < p_crit) & (volcano_df['FC'] < -fc_crit), 'Status'] = 'Down-regulated'
+            
+            with v_col3:
+                up_count = len(volcano_df[volcano_df['Status'] == 'Up-regulated'])
+                down_count = len(volcano_df[volcano_df['Status'] == 'Down-regulated'])
+                st.markdown(f"✅ 과발현: **{up_count}개** / 저발현: **{down_count}개** 유전자가 발견되었습니다.")
+
         col_v1, col_v2 = st.columns([1, 1.2])
         
-        # 1. 바이올린 차트 (구획 명확화)
+        # 1. 바이올린 차트 (기존 유지)
         with col_v1:
             with st.container(border=True):
                 st.markdown(f"<h4 style='text-align: center; color: #334155;'>📊 발현량 분포: <b>{selected_gene}</b></h4>", unsafe_allow_html=True)
@@ -288,76 +439,115 @@ if df is not None:
                 fig_box.update_yaxes(showgrid=True, gridwidth=1, gridcolor='#f1f5f9')
                 st.plotly_chart(fig_box, use_container_width=True)
 
-        # 2. 히트맵 구현 (구획 명확화 및 TypeError 수정)
+        # 2. 클러스터링 히트맵 구현 (고도화 버전)
         with col_v2:
             with st.container(border=True):
-                st.markdown("<h4 style='text-align: center; color: #334155;'>🔥 Top 10 유전자 발현 패턴</h4>", unsafe_allow_html=True)
+                st.markdown("<h4 style='text-align: center; color: #334155;'>🔥 패턴 클러스터링 히트맵</h4>", unsafe_allow_html=True)
                 st.markdown("<hr style='margin-top: 0; margin-bottom: 1rem;'>", unsafe_allow_html=True)
                 
-                @st.cache_data
-                def get_top_10_heatmap_data(dataframe):
-                    normal_means = dataframe[dataframe[group_col] == 'Normal'][gene_cols].mean()
-                    cancer_means = dataframe[dataframe[group_col] == 'Cancer (Tumor)'][gene_cols].mean()
-                    diffs = cancer_means - normal_means
+                @st.cache_data(show_spinner=False)
+                def get_clustered_heatmap_data(dataframe, diff_results, top_n=30):
+                    from scipy.cluster.hierarchy import linkage, leaves_list
+                    from scipy.spatial.distance import pdist
                     
-                    # 절대값 기준으로 가장 차이가 큰 10개 선택
-                    top10_genes = diffs.abs().sort_values(ascending=False).head(10).index.tolist()
+                    # 1. P-value 기준 가장 유의미한 상위 N개 유전자 선택
+                    significant_genes = diff_results.sort_values('P').head(top_n)['Gene'].tolist()
                     
-                    # 히트맵을 위해 데이터 재배열 (정상군이 왼쪽, 환자군이 오른쪽으로 오도록 정렬)
-                    sorted_df = dataframe.sort_values(by=group_col, ascending=False)
-                    heatmap_data = sorted_df[top10_genes].T # 유전자가 행, 샘플이 열
+                    # 2. 데이터 추출 및 Z-score 정규화
+                    subset = dataframe[significant_genes].apply(pd.to_numeric, errors='coerce').fillna(0)
+                    z_data = subset.apply(lambda x: (x - x.mean()) / x.std() if x.std() != 0 else 0)
                     
-                    # Z-score 정규화 (유전자별로 시각적 대비를 극대화하기 위함)
-                    # Pandas Series of arrays 대신 2D DataFrame이 유지되도록 수정 (TypeError 해결)
-                    heatmap_data = pd.DataFrame(
-                        stats.zscore(heatmap_data, axis=1), 
-                        index=heatmap_data.index, 
-                        columns=heatmap_data.columns
-                    )
-                    return heatmap_data, sorted_df[group_col].tolist()
+                    # 3. 계층적 클러스터링 수행 (행: 유전자, 열: 샘플)
+                    # 유전자 클러스터링 (행 방향)
+                    gene_dist = pdist(z_data.T, metric='euclidean')
+                    gene_linkage = linkage(gene_dist, method='ward')
+                    gene_order = leaves_list(gene_linkage)
+                    
+                    # 샘플 클러스터링 (열 방향)
+                    sample_dist = pdist(z_data, metric='euclidean')
+                    sample_linkage = linkage(sample_dist, method='ward')
+                    sample_order = leaves_list(sample_linkage)
+                    
+                    # 4. 정렬된 데이터 생성
+                    ordered_genes = [significant_genes[i] for i in gene_order]
+                    # 샘플 정렬 및 그룹 정보 유지
+                    ordered_z_data = z_data.iloc[sample_order][ordered_genes].T
+                    ordered_groups = dataframe.iloc[sample_order]['target_actual'].tolist()
+                    
+                    return ordered_z_data, ordered_groups, ordered_genes
 
-            heatmap_data, sample_groups = get_top_10_heatmap_data(df)
+            try:
+                heatmap_z, sample_groups, ordered_genes = get_clustered_heatmap_data(df, volcano_df, top_n=30)
+                
+                fig_heat = px.imshow(
+                    heatmap_z,
+                    labels=dict(x="Samples (Clustered)", y="miRNA", color="Z-score"),
+                    x=[f"{g}" for g in sample_groups],
+                    y=ordered_genes,
+                    aspect="auto",
+                    color_continuous_scale=[[0, "#92A8D1"], [0.5, "#F0EEEB"], [1, "#F7CAC9"]],
+                    color_continuous_midpoint=0
+                )
+                fig_heat.update_xaxes(showticklabels=True, tickangle=45, tickfont=dict(size=8))
+                fig_heat.update_layout(height=500, margin=dict(l=20, r=20, t=20, b=20))
+                st.plotly_chart(fig_heat, use_container_width=True)
+                
+                st.info(f"💡 **분석 결과**: 상위 {len(ordered_genes)}개의 유전자를 클러스터링한 결과입니다.")
+                
+                # --- 상위 유전자 상세 수치 표 (이제 Status가 확실히 존재합니다) ---
+                with st.expander("📊 상위 유전자 상세 수치 보기", expanded=False):
+                    top_gene_stats = volcano_df.sort_values('P').head(30)[['Gene', 'FC', 'P', 'Status']]
+                    top_gene_stats.columns = ['miRNA 이름', 'Log2 Fold Change', 'P-value', '상태']
+                    st.dataframe(top_gene_stats.style.background_gradient(subset=['Log2 Fold Change'], cmap='coolwarm'), use_container_width=True)
+            except Exception as e:
+                st.error(f"히트맵 생성 중 오류가 발생했어요: {e}")
+
+        # --- 3. Volcano Plot ---
+        st.markdown("<br>", unsafe_allow_html=True)
+        with st.container(border=True):
+            st.markdown("<h4 style='text-align: center; color: #334155;'>🌋 유전자 차별 발현 분석 (Volcano Plot)</h4>", unsafe_allow_html=True)
+            st.markdown("<hr style='margin-top: 0; margin-bottom: 1rem;'>", unsafe_allow_html=True)
             
-            fig_heat = px.imshow(
-                heatmap_data,
-                labels=dict(x="Patients/Samples", y="miRNA", color="Expression (Z-score)"),
-                x=[f"Sample_{i}" for i in range(len(sample_groups))],
-                y=heatmap_data.index,
-                aspect="auto",
-                color_continuous_scale=[[0, "#92A8D1"], [0.5, "#F0EEEB"], [1, "#F7CAC9"]],
-                color_continuous_midpoint=0
+            # 아래쪽의 입력창과 상태 계산 로직은 위로 이동했으므로, 여기서는 그래프만 그립니다.
+            
+            fig_volcano = px.scatter(
+                volcano_df, x='FC', y='logP', color='Status',
+                hover_name='Gene',
+                labels={'FC': 'Log2 Fold Change', 'logP': '-Log10 P-value'},
+                color_discrete_map={'Up-regulated': '#F7CAC9', 'Down-regulated': '#92A8D1', 'Non-significant': '#cbd5e1'},
+                template="plotly_white"
             )
+            # 기준선 추가
+            fig_volcano.add_vline(x=fc_crit, line_dash="dash", line_color="#F7CAC9", opacity=0.7)
+            fig_volcano.add_vline(x=-fc_crit, line_dash="dash", line_color="#92A8D1", opacity=0.7)
+            fig_volcano.add_hline(y=-np.log10(p_crit), line_dash="dash", line_color="#334155", opacity=0.7)
             
-            # X축 레이블을 없애고 레이아웃 다듬기
-            fig_heat.update_xaxes(showticklabels=False)
-            fig_heat.update_layout(margin=dict(l=20, r=20, t=20, b=20))
-            st.plotly_chart(fig_heat, use_container_width=True)
+            fig_volcano.update_layout(height=550, margin=dict(l=20, r=20, t=20, b=20))
+            st.plotly_chart(fig_volcano, use_container_width=True)
             
-            # 해석 가이드 (Alert Box 형태)
-            st.info('''
-            **[히트맵 해석 가이드]**
-            * **가로축(X축)**은 133개의 전체 샘플을 나타내며, 왼쪽에는 '정상(Normal)', 오른쪽에는 '암(Cancer)' 샘플들이 모여 있습니다.
-            * **세로축(Y축)**은 암과 정상 조직 간에 가장 차이가 심한 상위 10개의 바이오마커 유전자입니다.
-            * **색상(Color)**: 붉은색일수록 해당 샘플에서 그 유전자가 평균보다 많이 발현되었음(과발현)을 의미하고, 푸른색일수록 적게 발현되었음(저발현)을 의미합니다.
-            * **결과 요약**: 붉은색과 푸른색 영역이 좌우로 뚜렷하게 나뉘어 보인다면, 해당 유전자들이 정상 조직과 암 조직을 완벽하게 구분해내는 핵심 유전자임을 증명합니다.
-            ''')
-            
+            with v_col3:
+                up_count = len(volcano_df[volcano_df['Status'] == 'Up-regulated'])
+                down_count = len(volcano_df[volcano_df['Status'] == 'Down-regulated'])
+                st.write(f"✅ **결과 요약**: 과발현 유전자 **{up_count}개**, 저발현 유전자 **{down_count}개**가 발견되었습니다.")
+
         st.markdown("---")
         with st.expander("💾 원본 데이터 확인 및 결과 Export (다운로드)", expanded=False):
-            st.markdown("분석된 **Top 10 유전자 발현 패턴(Z-score)**과 **전체 원본 데이터**를 CSV 형식으로 다운로드할 수 있습니다. 다운로드된 파일은 엑셀(Excel)에서 열어서 다른 사람과 공유하거나 논문/발표 자료용으로 활용할 수 있습니다.")
+            st.markdown("분석된 **Top 10 유전자 발현 패턴(Z-score)**과 **전체 원본 데이터**를 CSV 형식으로 다운로드할 수 있습니다.")
             
-            # 다운로드 버튼 가로 배치
             dl_col1, dl_col2 = st.columns(2)
             with dl_col1:
-                # Top 10 히트맵 데이터 CSV 변환
-                heatmap_csv = heatmap_data.to_csv().encode('utf-8-sig') # Excel에서 한글/특수문자 깨짐 방지
-                st.download_button(
-                    label="📥 Top 10 유전자 발현 패턴 다운로드 (CSV)",
-                    data=heatmap_csv,
-                    file_name="top10_heatmap_expression.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
+                # 클러스터링된 히트맵 데이터 CSV 변환
+                try:
+                    heatmap_csv = heatmap_z.to_csv().encode('utf-8-sig')
+                    st.download_button(
+                        label="📥 클러스터링 히트맵 데이터 다운로드 (CSV)",
+                        data=heatmap_csv,
+                        file_name="clustered_heatmap_data.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
+                except:
+                    st.info("히트맵 데이터를 준비 중입니다...")
             
             with dl_col2:
                 # 전체 데이터 CSV 변환
