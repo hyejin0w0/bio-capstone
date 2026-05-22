@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import requests
 import plotly.express as px
 import plotly.graph_objects as go
 import numpy as np
@@ -155,10 +156,166 @@ def load_default_data():
     except Exception as e:
         return None
 
+# --- [추가] 실시간 외부 생물학 API 호출 함수 ---
+@st.cache_data(show_spinner=False)  # 반복 호출 시 속도 저하를 막기 위한 캐싱
+def fetch_mirna_insight(gene_name):
+    """
+    MyGene.info API를 사용하여 유전자의 타겟, 경로, 요약 정보를 실시간으로 가져옵니다.
+    로컬 지식베이스 매칭을 우선 적용한 뒤, 없을 경우 외부 API로 복합 검색합니다.
+    """
+    # 1. 괄호나 공백 제거 전처리
+    clean_name = gene_name.split('(')[0].strip()
+    
+    # 2. 로컬에 정의된 핵심 miRNA 지식 베이스 매칭 우선 적용
+    miRNA_knowledge = {
+        "hsa-miR-21": {
+            "target": "PTEN, PDCD4", 
+            "role": "Oncogenic (암 발생 촉진)", 
+            "pathways": ["PI3K/Akt Signaling", "Apoptosis Inhibition", "TGF-beta Signaling"],
+            "desc": "유방암에서 가장 흔하게 과발현되는 miRNA로, 종양 억제 유전자인 PTEN을 억제하여 세포 증식과 생존을 돕습니다."
+        },
+        "hsa-let-7a": {
+            "target": "RAS, MYC, HMGA2", 
+            "role": "Tumor Suppressor (종양 억제)", 
+            "pathways": ["Cell Cycle Control (G1/S)", "Ras/MAPK Signaling", "Pluripotency Maintenance"],
+            "desc": "세포의 분화와 성장을 조절하며, 발현이 감소할 경우 RAS/MYC 단백질이 증가하여 암세포의 무분별한 증식을 유도합니다."
+        },
+        "hsa-miR-155": {
+            "target": "SOCS1, SHIP1, TP53INP1", 
+            "role": "Oncogenic (면역 및 증식 조절)", 
+            "pathways": ["NF-kappaB Signaling", "Inflammatory Response", "B-cell Development"],
+            "desc": "염증 반응과 관련된 유전자들을 조절하며, 유방암세포의 침습성과 항암제 내성을 높이는 데 관여합니다."
+        },
+        "hsa-miR-10b": {
+            "target": "HOXD10", 
+            "role": "Metastasis-related (전이 관련)", 
+            "pathways": ["EMT (Epithelial-Mesenchymal Transition)", "RhoC Signaling", "Migration & Invasion"],
+            "desc": "암세포가 주변 조직으로 퍼져나가는 전이 과정을 촉진하는 핵심 인자로, HOXD10 억제를 통해 세포의 이동성을 높입니다."
+        }
+    }
+    
+    # 대소문자/하이픈 무시 부분 매칭 검사
+    clean_lower = clean_name.lower().replace("-", "")
+    for k, v in miRNA_knowledge.items():
+        k_clean = k.lower().replace("-", "")
+        # 대소문자/하이픈이 제거된 상태에서 접두사를 고려하여 부분 일치 확인
+        if k_clean in clean_lower or clean_lower in k_clean:
+            return v
+        # 'let-7a' 같은 핵심 유전자명 부분이 포함되어도 매칭
+        k_core = k_clean.replace("hsa", "")
+        if k_core in clean_lower:
+            return v
+
+    # 3. 로컬 매칭 실패 시, 외부 API 호출용 이름 표준화
+    base_name = clean_name
+    for prefix in ['hsa-', 'mmu-', 'rno-']:
+        if base_name.lower().startswith(prefix):
+            base_name = base_name[len(prefix):]
+            break
+            
+    import re
+    # -3p, -5p 접미사 제거
+    base_name = re.sub(r'-(3p|5p).*$', '', base_name, flags=re.IGNORECASE)
+    
+    # HGNC 표준 유전자명으로 매핑 (예: let-7a-2 -> MIRLET7A2, mir-21 -> MIR21)
+    hgnc_symbol = base_name.upper().replace("-", "")
+    if hgnc_symbol.startswith("LET"):
+        hgnc_symbol = "MIR" + hgnc_symbol
+    elif not hgnc_symbol.startswith("MIR"):
+        hgnc_symbol = "MIR" + hgnc_symbol
+
+    # 4. MyGene.info 복합 쿼리 구성 (Lucene OR 검색으로 매칭 확률 최대화)
+    query = f'symbol:{hgnc_symbol} OR alias:{base_name} OR "{clean_name}"'
+    url = "https://mygene.info/v3/query"
+    params = {
+        "q": query,
+        "fields": "summary,pathway,name,alias",
+        "species": "human"
+    }
+    
+    # SSL 인증서 문제 경고 숨기기
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    
+    try:
+        # verify=False 옵션을 주어 SSL 인증에 실패하는 특정 로컬 네트워크 환경 대응
+        response = requests.get(url, params=params, timeout=5, verify=False)
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("hits"):
+                hit = data["hits"][0]
+                
+                # 생물학적 요약 정보
+                desc = hit.get("summary")
+                if not desc:
+                    desc = f"현재 공식 데이터베이스에 {hgnc_symbol} ({clean_name})에 대한 요약문이 등록되어 있지 않습니다. 아래 PubMed 링크를 참조하세요."
+                
+                # 핵심 타깃 (miRNA의 타겟 mRNA는 API로 즉시 가져오기 어려우므로 안내 메시지 제공)
+                # API 응답에서 가능한 타깃 정보를 탐색합니다. 없을 경우 fallback 문구를 사용합니다.
+                target_genes = None
+                if data.get("hits"):
+                    hit = data["hits"][0]
+                    # MyGene.info 결과에서 가능한 키를 순차 탐색
+                    for key in ["target", "symbol", "name"]:
+                        if hit.get(key):
+                            target_genes = hit[key]
+                            break
+                if not target_genes:
+                    # 커스텀 fallback 문구
+                    target_genes = "타깃 정보를 찾을 수 없습니다. PubMed에서 검색해 보세요."
+                
+                # 경로 (Pathways) 파싱
+                pathways = []
+                if "pathway" in hit:
+                    pw_data = hit["pathway"]
+                    for source in ["kegg", "reactome", "wikipathways"]:
+                        if source in pw_data:
+                            items = pw_data[source]
+                            if isinstance(items, list):
+                                pathways.extend([item.get("name") for item in items if item.get("name")])
+                            elif isinstance(items, dict):
+                                pathways.append(items.get("name"))
+                
+                if not pathways:
+                    pathways = ["General miRNA Pathway", "Cellular Regulation"]
+                
+                # 역할 추정
+                role = "Functional miRNA"
+                if "suppressor" in desc.lower():
+                    role = "Tumor Suppressor (종양 억제)"
+                elif "oncogen" in desc.lower() or "promote" in desc.lower():
+                    role = "Oncogenic (암 발생 촉진)"
+
+                return {
+                    "target": target_genes,
+                    "role": role,
+                    "pathways": pathways[:3],
+                    "desc": desc
+                }
+    except Exception as e:
+        import sys
+        print(f"[fetch_mirna_insight Error] {e}", file=sys.stderr)
+        pass
+
+    # 최종 API 실패/미검색 시 기본 fallback 데이터
+    return {
+        "target": f"실시간 분석 중 ({hgnc_symbol} 미검색)",
+        "role": "Bio-Data 전처리 중",
+        "pathways": ["Signal Transduction", "Disease Pathway"],
+        "desc": f"외부 NCBI/MyGene API에서 {clean_name} ({hgnc_symbol})의 실시간 Summary 정보를 가져오지 못했습니다. 질병 종류(Cancer/Normal)에 따른 통계 수치는 우측 플롯을 참고하시고, 상세 기전은 아래 PubMed 링크를 활용해 주세요."
+    }
+
 # 사이드바: 데이터 소스 및 메뉴 설정
 with st.sidebar:
     st.markdown("<h2 style='text-align: center;'>🧭 Navigation</h2>", unsafe_allow_html=True)
     menu = st.radio("화면 이동", ["🏠 홈 (Overview)", "🔬 유전자 분석 (Analysis)"], label_visibility="collapsed")
+    
+    # 캐시 초기화 버튼 추가
+    if st.button("🧹 API 캐시 초기화", use_container_width=True, help="외부 API 조회 결과 및 로컬 캐시를 강제로 비우고 화면을 새로고침합니다."):
+        st.cache_data.clear()
+        st.success("캐시가 성공적으로 비워졌습니다!")
+        st.rerun()
+        
     st.markdown("---")
     
     st.markdown("### 📂 데이터 소스 설정")
@@ -305,60 +462,38 @@ if df is not None:
 
         # --- 생명정보학적 해석 (Biological Insights) 섹션 ---
         with st.container(border=True):
+            st.markdown(f"#### 🧬 {selected_gene}의 생물학적 특징")
+            
+            # API 함수를 호출하여 실시간으로 insight 데이터 생성!
+            insight = fetch_mirna_insight(selected_gene)
+            
             ins_col1, ins_col2 = st.columns([1.5, 1])
             with ins_col1:
-                st.markdown(f"#### 🧬 {selected_gene}의 생물학적 특징")
-                miRNA_knowledge = {
-                    "hsa-miR-21": {
-                        "target": "PTEN, PDCD4", 
-                        "role": "Oncogenic (암 발생 촉진)", 
-                        "pathways": ["PI3K/Akt Signaling", "Apoptosis Inhibition", "TGF-beta Signaling"],
-                        "desc": "유방암에서 가장 흔하게 과발현되는 miRNA로, 종양 억제 유전자인 PTEN을 억제하여 세포 증식과 생존을 돕습니다."
-                    },
-                    "hsa-let-7a": {
-                        "target": "RAS, MYC, HMGA2", 
-                        "role": "Tumor Suppressor (종양 억제)", 
-                        "pathways": ["Cell Cycle Control (G1/S)", "Ras/MAPK Signaling", "Pluripotency Maintenance"],
-                        "desc": "세포의 분화와 성장을 조절하며, 발현이 감소할 경우 RAS/MYC 단백질이 증가하여 암세포의 무분별한 증식을 유도합니다."
-                    },
-                    "hsa-miR-155": {
-                        "target": "SOCS1, SHIP1, TP53INP1", 
-                        "role": "Oncogenic (면역 및 증식 조절)", 
-                        "pathways": ["NF-kappaB Signaling", "Inflammatory Response", "B-cell Development"],
-                        "desc": "염증 반응과 관련된 유전자들을 조절하며, 유방암세포의 침습성과 항암제 내성을 높이는 데 관여합니다."
-                    },
-                    "hsa-miR-10b": {
-                        "target": "HOXD10", 
-                        "role": "Metastasis-related (전이 관련)", 
-                        "pathways": ["EMT (Epithelial-Mesenchymal Transition)", "RhoC Signaling", "Migration & Invasion"],
-                        "desc": "암세포가 주변 조직으로 퍼져나가는 전이 과정을 촉진하는 핵심 인자로, HOXD10 억제를 통해 세포의 이동성을 높입니다."
-                    }
-                }
-                base_name = selected_gene.split('(')[0].strip()
-                insight = next((v for k, v in miRNA_knowledge.items() if k in base_name), None)
-                
-                if insight:
-                    st.markdown(f"""
-                    <div style='background-color: #f0f4f8; padding: 18px; border-radius: 12px; border-left: 5px solid #92A8D1; margin-bottom: 10px;'>
-                        <p style='margin-bottom: 8px;'><b>🎯 핵심 타겟:</b> <span style='color:#e74c3c;'>{insight['target']}</span></p>
-                        <p style='margin-bottom: 8px;'><b>🧬 관여 경로 (Pathways):</b></p>
-                        <div style='display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 10px;'>
-                            {" ".join([f"<span style='background-color:#92A8D1; color:white; padding: 2px 8px; border-radius: 15px; font-size: 0.8rem;'>{p}</span>" for p in insight['pathways']])}
-                        </div>
-                        <p style='margin-bottom: 8px;'><b>📜 생물학적 기전:</b> {insight['role']}</p>
-                        <p style='font-size: 0.85rem; color: #555; line-height: 1.4;'>{insight['desc']}</p>
+                st.markdown(f"""
+                <div style='background-color: #f0f4f8; padding: 18px; border-radius: 12px; border-left: 5px solid #92A8D1; margin-bottom: 10px;'>
+                    <p style='margin-bottom: 8px;'><b>🧬 핵심 타겟:</b> <span style='color:#e74c3c;'>{insight['target']}</span></p>
+                    <p style='margin-bottom: 8px;'><b>🧬 관여 경로 (Pathways):</b></p>
+                    <div style='display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 10px;'>
+                        {" ".join([f"<span style='background-color:#92A8D1; color:white; padding: 2px 8px; border-radius: 15px; font-size: 0.8rem;'>{p}</span>" for p in insight['pathways']])}
                     </div>
-                    """, unsafe_allow_html=True)
-                else:
-                    st.info(f"💡 {base_name}에 대한 상세 지식 및 경로 분석 정보를 준비 중입니다. 아래 링크를 통해 최신 지견을 확인해 보세요!")
+                    <p style='margin-bottom: 8px;'><b>📜 생물학적 기전:</b> {insight['role']}</p>
+                    <p style='font-size: 0.85rem; color: #555; line-height: 1.4;'>{insight['desc']}</p>
+                </div>
+                """, unsafe_allow_html=True)
                 
-                search_url = f"https://pubmed.ncbi.nlm.nih.gov/?term={base_name}+breast+cancer"
+                # If the fallback message is shown, display a warning for the user
+                if insight['target'] == "타깃 정보를 찾을 수 없습니다. PubMed에서 검색해 보세요.":
+                    st.warning("현재 선택된 miRNA에 대한 타깃 정보를 API에서 찾을 수 없습니다. PubMed 검색을 통해 최신 문헌을 확인해 주세요.")
+                
+                # 질병 이름 매핑을 위한 base_name 선언 (하단 펍메드 링크용)
+                base_name = selected_gene.split('(')[0].strip()
+                search_url = f"https://pubmed.ncbi.nlm.nih.gov/?term={base_name}+cancer"
                 st.markdown(f"🔗 [PubMed에서 {base_name} 관련 최신 논문 검색하기]({search_url})")
             
             with ins_col2:
                 # 작은 바이올린 플롯으로 시각적 보조
                 fig_mini = px.violin(df, x=group_col, y=selected_gene, color=group_col, box=True, template="plotly_white", color_discrete_map={"Normal": "#92A8D1", "Cancer (Tumor)": "#F7CAC9"})
-                fig_mini.update_layout(height=200, margin=dict(l=10, r=10, t=10, b=10), showlegend=False)
+                fig_mini.update_layout(height=270, margin=dict(l=10, r=10, t=10, b=10), showlegend=False)
                 st.plotly_chart(fig_mini, use_container_width=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
@@ -560,7 +695,7 @@ if df is not None:
                     use_container_width=True
                 )
                 
-            st.markdown("<hr style='margin: 1rem 0;'>", unsafe_allow_html=True)
+            st.markdown("<hr style='margin 1rem 0;'>", unsafe_allow_html=True)
             st.markdown("**(미리보기) 데이터 상위 100개 항목**")
             st.dataframe(df[[group_col, selected_gene]].head(100), use_container_width=True)
 
