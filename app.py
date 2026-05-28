@@ -413,6 +413,57 @@ if df is not None:
         3. **통계적 검증**: T-test를 기반으로 p-value를 계산하여 두 그룹 간의 차이가 통계적으로 유의미한지 직관적으로 제공합니다.
         """)
 
+        st.markdown("<br><br>", unsafe_allow_html=True)
+        st.markdown("### 🧬 생물학적 의의 및 바이오마커 역할 안내")
+        
+        # 3가지 핵심 역할 (진단, 예후/전이, 치료 표적) 카드형 레이아웃
+        st.markdown("""
+        <div style="background-color: #ffffff; border-radius: 12px; padding: 22px; border: 2px solid #92A8D1; box-shadow: 0 4px 12px rgba(146, 168, 209, 0.12); margin-bottom: 25px;">
+            <h4 style="color: #334155; margin-top: 0; margin-bottom: 12px; font-weight: 700;">🔬 분석 결과(유의미한 차이)가 가지는 생물학적 의미</h4>
+            <p style="font-size: 0.95rem; color: #555555; line-height: 1.65; margin-bottom: 22px;">
+                유전자 분석 탭에서 T-test 결과 <b>P-value &lt; 0.05</b>로 확인되는 miRNA들은 정상 조직과 유방암 조직 간에 발현량의 통계적으로 유의미한 차이가 있음을 뜻하며, 이는 암의 생물학적 기전과 밀접하게 연관되어 <b>바이오마커(Biomarker)</b>로서 다양한 임상적 가치를 가집니다.
+            </p>
+            <div style="display: flex; gap: 15px; flex-wrap: wrap;">
+                <div style="flex: 1; min-width: 250px; background-color: #f8fafc; border-left: 4px solid #F7CAC9; padding: 16px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.02);">
+                    <strong style="color: #e11d48; font-size: 0.95rem;">🔍 1. 조기 진단 바이오마커 (Diagnostic)</strong>
+                    <p style="font-size: 0.85rem; color: #64748b; line-height: 1.55; margin-top: 8px; margin-bottom: 0;">
+                        특정 miRNA가 정상 조직보다 유방암 조직에서 극적으로 과발현(또는 저발현)되는 패턴을 보여준다면, 이를 혈액이나 조직 샘플에서 검출하여 질병의 존재 여부를 초기에 판별하는 <b>진단 마커</b>로 개발할 수 있습니다.
+                    </p>
+                </div>
+                <div style="flex: 1; min-width: 250px; background-color: #f8fafc; border-left: 4px solid #92A8D1; padding: 16px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.02);">
+                    <strong style="color: #2563eb; font-size: 0.95rem;">📈 2. 예후 및 전이 예측 (Prognostic)</strong>
+                    <p style="font-size: 0.85rem; color: #64748b; line-height: 1.55; margin-top: 8px; margin-bottom: 0;">
+                        암세포의 전이(EMT) 과정이나 혈관 신생을 유도하는 특정 pathway 관여 유전자(예: miR-10b의 HOXD10 억제 등)는 환자의 재발 위험성, 종양 악성도 및 5년 생존율을 예측하는 <b>예후 판정 지표</b>로 사용됩니다.
+                    </p>
+                </div>
+                <div style="flex: 1; min-width: 250px; background-color: #f8fafc; border-left: 4px solid #F7CAC9; padding: 16px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.02);">
+                    <strong style="color: #b45309; font-size: 0.95rem;">🎯 3. 새로운 치료 표적 (Therapeutic Target)</strong>
+                    <p style="font-size: 0.85rem; color: #64748b; line-height: 1.55; margin-top: 8px; margin-bottom: 0;">
+                        통계적으로 암군에서 과발현되는 유전자는 암 성장을 돕는 <b>온코미르(OncomiR)</b>로서 핵산 저해 치료제의 타겟이 되며, 저발현되는 유전자는 <b>종양 억제 유전자(Tumor Suppressor)</b>로서 기능 보완 치료법의 표적이 됩니다.
+                    </p>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # 과발현 vs 저발현 생물학적 기전 상세 카드
+        st.markdown("""
+        <div style="display: flex; gap: 20px; margin-bottom: 30px; flex-wrap: wrap;">
+            <div style="flex: 1; min-width: 300px; background-color: #ffffff; border-radius: 12px; padding: 20px; border: 2px solid #F7CAC9; box-shadow: 0 4px 10px rgba(247, 202, 201, 0.12);">
+                <h5 style="color: #e11d48; margin-top: 0; margin-bottom: 10px; font-weight: 700; font-size: 1.05rem;">📈 Up-regulated (과발현 - OncomiR)</h5>
+                <p style="font-size: 0.88rem; color: #555555; line-height: 1.55; margin-bottom: 0;">
+                    암 조직에서 정상 대비 현저히 발현량이 증가한 miRNA입니다. 주로 종양 억제 유전자(Tumor Suppressors, 예: PTEN)를 표적하여 억제함으로써, 세포가 사멸하지 않고 무한 증식하게 도와주는 <b>종양 유발 인자</b> 역할을 합니다. (예: <i>hsa-miR-21, hsa-miR-155</i> 등)
+                </p>
+            </div>
+            <div style="flex: 1; min-width: 300px; background-color: #ffffff; border-radius: 12px; padding: 20px; border: 2px solid #92A8D1; box-shadow: 0 4px 10px rgba(146, 168, 209, 0.12);">
+                <h5 style="color: #2563eb; margin-top: 0; margin-bottom: 10px; font-weight: 700; font-size: 1.05rem;">📉 Down-regulated (저발현 - Tumor Suppressor)</h5>
+                <p style="font-size: 0.88rem; color: #555555; line-height: 1.55; margin-bottom: 0;">
+                    암 조직에서 정상 대비 발현량이 감소한 miRNA입니다. 정상 상태에서는 종양 유발 유전자(Oncogenes, 예: RAS, MYC)를 억제하여 비정상 세포 증식을 막아주는 역할을 하나, 암화 과정에서 소실되어 종양 억제 기능이 약화됩니다. (예: <i>hsa-let-7a</i> 등)
+                </p>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
     # ---------------------------------------------------------
     # 🔬 유전자 분석 화면 (Analysis)
     # ---------------------------------------------------------
